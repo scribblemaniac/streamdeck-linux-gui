@@ -6,8 +6,9 @@ from functools import partial
 from typing import Dict, List, Optional, Tuple, Union
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot, SIGNAL, SLOT, QDataStream
 from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtDBus import QDBusInterface, QDBusConnection, QDBusMessage, QDBusArgument
 from StreamDeck.Devices import StreamDeck
 from StreamDeck.Transport.Transport import TransportError
 
@@ -43,6 +44,30 @@ class StreamDeckSignalEmitter(QObject):
     "A signal that is raised whenever a StreamDeck is detached. "
     cpu_changed = Signal(str, int)
 
+class SystemLockSignalEmitter(QObject):
+    @Slot(QDBusMessage)
+    def _receive_dbus_signal(self, message: QDBusMessage) -> None:
+        if message.interface() == "org.freedesktop.DBus.Properties" and message.member() == "PropertiesChanged":
+            print("Args", message.arguments())
+            arguments = message.arguments()
+            if len(arguments) >= 2:
+                argument = arguments[1]
+                if argument.currentType() == QDBusArgument.ElementType.MapType:
+                    argument.beginArray()
+                    argument.beginMap()
+                    argument.beginMapEntry()
+                    key = argument.asVariant()
+                    argument.beginArray()
+                    val = argument.asVariant()
+                    argument.endArray()
+                    argument.endMapEntry()
+                    argument.endMap()
+                    argument.endArray()
+                if key == "LockedHint" and type(val) == bool:
+                    self.lock_changed.emit(val)
+
+    lock_changed = Signal(bool)
+    "A signal that is raised whenever the system lock state changes."
 
 class StreamDeckServer:
     """A StreamDeckServer represents the core server logic for interacting and
@@ -79,6 +104,10 @@ class StreamDeckServer:
     streamdeck_keys = KeySignalEmitter()
     "Use the connect method on the key_pressed signal to subscribe"
 
+    system_lock = SystemLockSignalEmitter()
+    system_locked: bool = False
+    "Tracks if the system is currently locked (e.g. screen saver) or not"
+
     def __init__(self) -> None:
         self.decks_by_serial: Dict[str, StreamDeck.StreamDeck] = {}
 
@@ -94,6 +123,13 @@ class StreamDeckServer:
         # plug events and key signals?
         self.streamdeck_keys = KeySignalEmitter()
         self.plugevents = StreamDeckSignalEmitter()
+        self.system_lock = SystemLockSignalEmitter()
+
+        self.dbus_interface = QDBusInterface("org.freedesktop.login1", "/org/freedesktop/login1/session/_34", "org.freedesktop.DBus.Properties", QDBusConnection.systemBus())
+        self.system_lock.lock_changed.connect(self._set_system_lock_state)
+        #self.streamdeck_keys.connect(SIGNAL("key_pressed(QString, int, bool)"), self.system_lock, SLOT("_receive_dbus_signal()"))
+        self.dbus_interface.connect(SIGNAL("PropertiesChanged(QDBusMessage)"), self.system_lock, SLOT("_receive_dbus_signal(QDBusMessage)"))
+        #dbus_interface.connect("PropertiesChanged", self.system_lock._dbus_event)
 
     def stop_dimmer(self, serial_number: str) -> None:
         """Stops the dimmer for the given Stream Deck
@@ -699,3 +735,6 @@ class StreamDeckServer:
             )
 
         display_handler.replace(page, button, filters)
+
+    def _set_system_lock_state(self, locked: bool) -> None:
+        self.system_locked = locked

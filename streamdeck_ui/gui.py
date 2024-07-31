@@ -180,6 +180,9 @@ class DraggableButton(QToolButton):
 def handle_keypress(ui, deck_id: str, key: int, state: bool) -> None:
     # TODO: Handle both key down and key up events in future.
     if state:
+        if api.system_locked:
+            return
+
         if api.reset_dimmer(deck_id):
             return
 
